@@ -1,0 +1,22 @@
+name: llmt
+version: 0.1.0
+publish_to: https://pub.dev
+description: LLM-based translation generator for Flutter ARB files
+homepage: https://navideck.com
+repository: https://github.com/Navideck/llmt
+
+environment:
+  sdk: ">=3.10.4 <4.0.0"
+
+dependencies:
+  yaml: ^3.1.2
+  http: ^1.0.0
+  collection: ^1.18.0
+
+executables:
+  llmt:
+
+dev_dependencies:
+  test: ^1.24.0
+
+
