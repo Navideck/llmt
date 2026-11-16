@@ -2,6 +2,8 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'config.dart';
+import 'models.dart';
+import 'yaml_strings_parser.dart';
 
 class ArbService {
   final LlmTranslateConfig config;
@@ -43,6 +45,70 @@ class ArbService {
       'placeholders': placeholders,
     };
   }
+
+  /// Builds the authoritative ARB map for [locale] from the current
+  /// `strings.yaml` keys. Values and `@key` metadata are regenerated from
+  /// [allKeys], so keys deleted from `strings.yaml` disappear here.
+  Map<String, dynamic> buildTemplateArb(KeyMap allKeys, String locale) {
+    final arb = <String, dynamic>{'@@locale': locale};
+    for (final entry in allKeys.entries) {
+      final arbKey = YamlStringsParser.dotToCamel(entry.key);
+      arb[arbKey] = entry.value.text;
+      final meta = genArbMeta(entry.key, entry.value.paramTypes);
+      if (meta != null) {
+        arb['@$arbKey'] = meta;
+      }
+    }
+    return arb;
+  }
+
+  /// ARB keys (values and their `@key` metadata) that no longer exist in
+  /// [templateArb]. When [onlyPrefix] is given, only keys under that
+  /// `strings.yaml` subtree are considered.
+  Set<String> staleKeys(
+    String locale,
+    Map<String, dynamic> templateArb, {
+    String? onlyPrefix,
+  }) {
+    final arb = readArb(locale);
+    final validKeys = <String>{
+      for (final key in templateArb.keys)
+        if (!key.startsWith('@')) key,
+    };
+    final prefix = _onlyCamelPrefix(onlyPrefix);
+    final stale = <String>{};
+    for (final key in arb.keys) {
+      if (key == '@@locale') continue;
+      final baseKey = key.startsWith('@') ? key.substring(1) : key;
+      if (validKeys.contains(baseKey)) continue;
+      if (prefix != null && !_inScope(baseKey, prefix)) continue;
+      stale.add(key);
+    }
+    return stale;
+  }
+
+  /// Removes [staleKeys] from the locale ARB file. Returns the number of
+  /// removed entries (values and metadata counted separately).
+  int pruneStaleKeys(
+    String locale,
+    Map<String, dynamic> templateArb, {
+    String? onlyPrefix,
+  }) {
+    final stale = staleKeys(locale, templateArb, onlyPrefix: onlyPrefix);
+    if (stale.isEmpty) return 0;
+    final arb = readArb(locale);
+    arb.removeWhere((key, _) => stale.contains(key));
+    writeRawArb(arb, locale);
+    return stale.length;
+  }
+
+  static String? _onlyCamelPrefix(String? onlyPrefix) {
+    if (onlyPrefix == null || onlyPrefix.isEmpty) return null;
+    return YamlStringsParser.dotToCamel(onlyPrefix);
+  }
+
+  static bool _inScope(String arbKey, String camelPrefix) =>
+      arbKey == camelPrefix || arbKey.startsWith(camelPrefix);
 
   void cleanStaleKeys(
     Map<String, dynamic> targetArb,

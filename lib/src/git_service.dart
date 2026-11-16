@@ -4,6 +4,12 @@ import 'config.dart';
 import 'models.dart';
 import 'yaml_strings_parser.dart';
 
+/// Comparison of `strings.yaml` against git `HEAD`.
+///
+/// [changed] holds dot keys to (re)translate, [deleted] holds camelCase ARB
+/// keys that no longer exist in `strings.yaml`.
+typedef KeyDiff = ({Set<String> changed, Set<String> deleted});
+
 class GitService {
   final LlmTranslateConfig config;
   final String gitRoot;
@@ -16,12 +22,12 @@ class GitService {
     return GitService(config: config, gitRoot: gitRoot, cwd: cwd);
   }
 
-  Set<String> gitDiffedKeys(KeyMap allKeys) {
+  KeyDiff diffAgainstHead(KeyMap allKeys) {
     final gitRel = config.entryFile.substring(gitRoot.length + 1);
     final oldContent = gitShowOld(gitRel);
     if (oldContent == null) {
       print('No previous version in git. Translating all keys.');
-      return allKeys.keys.toSet();
+      return (changed: allKeys.keys.toSet(), deleted: <String>{});
     }
 
     YamlMap? oldYaml;
@@ -31,10 +37,12 @@ class GitService {
       stderr.writeln(
         'Warning: could not parse git HEAD version of ${config.entryFile}, falling back to full translate.',
       );
-      return allKeys.keys.toSet();
+      return (changed: allKeys.keys.toSet(), deleted: <String>{});
     }
 
-    if (oldYaml == null) return allKeys.keys.toSet();
+    if (oldYaml == null) {
+      return (changed: allKeys.keys.toSet(), deleted: <String>{});
+    }
 
     final oldRaw = YamlStringsParser.flattenYaml(oldYaml);
     final oldMap = <String, String>{};
@@ -59,6 +67,11 @@ class GitService {
       }
     }
 
+    return diffKeys(oldMap, allKeys);
+  }
+
+  /// Pure comparison so the diff semantics are testable without git.
+  static KeyDiff diffKeys(Map<String, String> oldMap, KeyMap allKeys) {
     final changed = <String>{};
     for (final entry in allKeys.entries) {
       final oldText = oldMap[entry.key];
@@ -66,24 +79,14 @@ class GitService {
         changed.add(entry.key);
       }
     }
-    return changed;
-  }
 
-  Set<String> gitDeletedKeys(KeyMap allKeys) {
-    final gitRel = config.entryFile.substring(gitRoot.length + 1);
-    final oldContent = gitShowOld(gitRel);
-    if (oldContent == null) return {};
-    YamlMap? oldYaml2;
-    try {
-      oldYaml2 = loadYaml(oldContent) as YamlMap?;
-    } catch (_) {
-      return {};
-    }
-    if (oldYaml2 == null) return {};
-    final oldRaw = YamlStringsParser.flattenYaml(oldYaml2);
-    final oldDotKeys = oldRaw.keys.map(YamlStringsParser.dotToCamel).toSet();
-    final curDotKeys = allKeys.keys.map(YamlStringsParser.dotToCamel).toSet();
-    return oldDotKeys.difference(curDotKeys);
+    final oldDotKeys = oldMap.keys.where((k) => !k.startsWith('fixed.'));
+    final deleted = oldDotKeys
+        .map(YamlStringsParser.dotToCamel)
+        .toSet()
+        .difference(allKeys.keys.map(YamlStringsParser.dotToCamel).toSet());
+
+    return (changed: changed, deleted: deleted);
   }
 
   String? gitShowOld(String gitRelPath) {

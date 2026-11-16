@@ -27,7 +27,7 @@ class LlmClient {
     final headers = <String, String>{
       'Authorization': 'Bearer $apiKey',
       'Content-Type': 'application/json',
-      'User-Agent': 'llmt/0.1.0',
+      'User-Agent': 'llmt/0.1.1',
     };
     for (final entry in config.customHeaders.entries) {
       final resolvedValue = entry.value

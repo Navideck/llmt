@@ -1,5 +1,9 @@
 # llm_translate
 
+<div align="center">
+  <img src="assets/llmt-banner-r1.png" alt="LLMT — LLM-powered translation for Flutter ARB files" width="100%">
+</div>
+
 An LLM-powered translation pipeline that produces ARB files for Flutter `gen-l10n`. Works with any OpenAI-compatible endpoint (OpenAI, LM Studio, Ollama, local models, etc.).
 
 ## Features
@@ -9,6 +13,7 @@ An LLM-powered translation pipeline that produces ARB files for Flutter `gen-l10
 - Automatic `.env` loading from working directory, parent folders up to git root, and `~/.env` / `~/.config/llm_translate/.env`
 - Parses `strings.yaml` with `{{@:path}}` reference resolution
 - Detects changed/new keys via git diff against HEAD (Git is source of truth)
+- Prunes keys removed from `strings.yaml` from every ARB (values and `@key` metadata)
 - Batches English + one target locale per LLM call
 - Generates ARB files with correct `@key` metadata for gen-l10n
 - `--force` flag for full retranslation
@@ -35,8 +40,10 @@ Ensure `~/.pub-cache/bin` is in your `PATH` so you can run `llmt` directly, or i
 Git is the **source of truth** for detecting changed translation keys:
 - By default, `llm_translate` compares `strings.yaml` against `HEAD` in git (`git diff`).
 - Only keys modified or added since the last git commit are translated.
-- If no uncommitted changes exist in `strings.yaml`, `llm_translate` outputs: `No changes detected. Use --force to force re-translate.`
-- Use `--force` to bypass git diff checks and retranslate existing keys (e.g. `dart run llmt --force --only plist`).
+- Keys removed from `strings.yaml` are pruned from every ARB file, including their `@key` metadata. This also cleans removals committed in earlier runs, and a deletion-only run makes no LLM calls.
+- ARB files are reconciled against `strings.yaml` on every run, so the ARBs never keep keys the YAML no longer has. `--only <subtree>` limits pruning to that subtree.
+- If nothing changed and no stale ARB keys exist, `llm_translate` outputs: `No changes detected. Use --force to force re-translate.`
+- Use `--force` to bypass git diff checks and retranslate existing keys (e.g. `dart run llmt --force --only plist`). Forced runs also prune stale keys.
 
 ## Usage
 

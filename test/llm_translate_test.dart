@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:llmt/llmt.dart';
+import 'package:llmt/src/arb_service.dart';
 import 'package:llmt/src/config.dart';
 import 'package:llmt/src/env_loader.dart';
+import 'package:llmt/src/git_service.dart';
 import 'package:llmt/src/llm_client.dart';
 import 'package:llmt/src/models.dart';
 import 'package:llmt/src/yaml_strings_parser.dart';
@@ -336,7 +338,7 @@ llm:
 
         expect(headers['Authorization'], 'Bearer my-api-key');
         expect(headers['Content-Type'], 'application/json');
-        expect(headers['User-Agent'], 'llmt/0.1.0');
+        expect(headers['User-Agent'], 'llmt/0.1.1');
         expect(headers['x-opencode-session'], 'stable-test-session-123');
         expect(headers['x-trace-id'], 'stable-test-session-123');
         expect(headers['x-custom-static'], 'static-val');
@@ -367,6 +369,134 @@ llm:
         ).hasMatch(client.sessionId),
         true,
       );
+    });
+  });
+
+  group('Removal detection', () {
+    late Directory tempDir;
+    late LlmTranslateConfig config;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('removal_test_');
+      Directory('${tempDir.path}/lib/l10n').createSync(recursive: true);
+      config = LlmTranslateConfig(
+        configPath: '${tempDir.path}/trconfig.yaml',
+        configDir: tempDir.path,
+        entryFile: '${tempDir.path}/strings.yaml',
+        resolveLinked: true,
+        paramPattern: '{*}',
+        arbDir: '${tempDir.path}/lib/l10n',
+        templateArbFile: 'app_en.arb',
+        arbPrefix: 'app_',
+        locales: {'en', 'de'},
+        llmEndpoint: 'http://localhost:8000/v1',
+        llmModel: 'dummy',
+        verifyModel: 'dummy',
+      );
+    });
+
+    tearDown(() {
+      tempDir.deleteSync(recursive: true);
+    });
+
+    test('diffKeys reports deletion-only changes as deleted, not changed', () {
+      final allKeys = {
+        'scan.pairedWithAnotherApp': KeyValue(
+          text: 'Paired with another app',
+          paramTypes: {},
+        ),
+      };
+      final oldMap = {
+        'scan.pairedWithAnotherApp': 'Paired with another app',
+        'scan.oldKey': 'Old key',
+      };
+
+      final diff = GitService.diffKeys(oldMap, allKeys);
+
+      expect(diff.changed, isEmpty);
+      expect(diff.deleted, {'scanOldKey'});
+    });
+
+    test('diffKeys ignores fixed.* keys that were never translated', () {
+      final allKeys = <String, KeyValue>{};
+      final oldMap = {'fixed.legacyKey': 'Legacy', 'moved.key': 'Moved'};
+
+      final diff = GitService.diffKeys(oldMap, allKeys);
+
+      expect(diff.deleted, isNot(contains('fixedLegacyKey')));
+      expect(diff.deleted, {'movedKey'});
+    });
+
+    test('buildTemplateArb regenerates values and placeholder metadata', () {
+      final allKeys = {
+        'scan.title': KeyValue(text: 'Scan', paramTypes: {}),
+        'scan.count': KeyValue(
+          text: 'Found {count}',
+          paramTypes: {'count': 'int'},
+        ),
+      };
+
+      final arb = ArbService(config).buildTemplateArb(allKeys, 'en');
+
+      expect(arb['@@locale'], 'en');
+      expect(arb['scanTitle'], 'Scan');
+      expect(arb['scanCount'], 'Found {count}');
+      expect(arb['@scanCount'], {
+        'description': 'Auto-generated for scan.count',
+        'placeholders': {
+          'count': {'type': 'int'},
+        },
+      });
+      expect(arb.containsKey('@scanTitle'), false);
+    });
+
+    test('pruneStaleKeys drops removed values and their metadata', () {
+      final arbService = ArbService(config);
+      arbService.writeRawArb({
+        '@@locale': 'de',
+        'scanTitle': 'Scannen',
+        'scanRemoved': 'Entfernt',
+        '@scanRemoved': {'description': 'Auto-generated for scan.removed'},
+      }, 'de');
+
+      final template = arbService.buildTemplateArb({
+        'scan.title': KeyValue(text: 'Scan', paramTypes: {}),
+      }, 'en');
+
+      final removed = arbService.pruneStaleKeys('de', template);
+
+      expect(removed, 2);
+      final pruned = arbService.readArb('de');
+      expect(pruned.keys, contains('@@locale'));
+      expect(pruned['scanTitle'], 'Scannen');
+      expect(pruned.containsKey('scanRemoved'), false);
+      expect(pruned.containsKey('@scanRemoved'), false);
+    });
+
+    test('pruneStaleKeys keeps stale keys outside the --only subtree', () {
+      final arbService = ArbService(config);
+      arbService.writeRawArb({
+        '@@locale': 'de',
+        'scanTitle': 'Scannen',
+        'scanRemoved': 'Entfernt',
+        'settingsRemoved': 'Entfernt',
+      }, 'de');
+
+      final template = arbService.buildTemplateArb({
+        'scan.title': KeyValue(text: 'Scan', paramTypes: {}),
+        'settings.title': KeyValue(text: 'Settings', paramTypes: {}),
+      }, 'en');
+
+      final removed = arbService.pruneStaleKeys(
+        'de',
+        template,
+        onlyPrefix: 'scan',
+      );
+
+      expect(removed, 1);
+      final pruned = arbService.readArb('de');
+      expect(pruned.containsKey('scanRemoved'), false);
+      expect(pruned['settingsRemoved'], 'Entfernt');
     });
   });
 

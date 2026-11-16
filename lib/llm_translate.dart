@@ -128,15 +128,11 @@ Options:
     }
 
     final gitService = GitService.fromCwd(_config, _cwd);
-    final changed = gitService.gitDiffedKeys(allKeys);
-    if (!_force && changed.isEmpty) {
-      print('No changes detected. Use --force to force re-translate.');
-      return;
-    }
+    final diff = gitService.diffAgainstHead(allKeys);
 
     final keysToTranslate = _force
         ? Map<String, KeyValue>.from(allKeys)
-        : <String, KeyValue>{for (final k in changed) k: allKeys[k]!};
+        : <String, KeyValue>{for (final k in diff.changed) k: allKeys[k]!};
 
     if (only != null && only.isNotEmpty) {
       keysToTranslate.removeWhere(
@@ -144,18 +140,34 @@ Options:
       );
     }
 
-    if (keysToTranslate.isEmpty) {
-      print(
-        'No translatable keys found${only != null ? ' for --only $only' : ''}.',
+    final arbService = ArbService(_config);
+
+    // Authoritative template ARB, rebuilt from strings.yaml. It also drives
+    // pruning of stale keys in every locale, so removals are detected even
+    // when they are the only change (or were committed earlier).
+    final engArb = arbService.buildTemplateArb(allKeys, 'en');
+
+    if (!_force && keysToTranslate.isEmpty) {
+      final staleCount = _config.locales.fold<int>(
+        0,
+        (sum, locale) =>
+            sum + arbService.staleKeys(locale, engArb, onlyPrefix: only).length,
       );
-      return;
+      if (staleCount == 0) {
+        print('No changes detected. Use --force to force re-translate.');
+        return;
+      }
+      print('No translation changes; pruning $staleCount stale key(s).');
     }
 
-    final arbService = ArbService(_config);
-    final llmClient = LlmClient(_config);
+    if (diff.deleted.isNotEmpty) {
+      print('Detected ${diff.deleted.length} removed key(s).');
+    }
 
-    final engArb = arbService.readArb('en');
+    arbService.writeRawArb(engArb, 'en');
     final arbMeta = arbService.extractArbMeta(engArb);
+
+    final llmClient = LlmClient(_config);
 
     var hasErrors = false;
 
@@ -229,41 +241,15 @@ Options:
       print('  ✓ $locale done.');
     }
 
-    if (!_force) {
-      var deleted = gitService.gitDeletedKeys(allKeys);
-      if (only != null && only.isNotEmpty) {
-        deleted = deleted
-            .where((k) => k == only || k.startsWith('$only.'))
-            .toSet();
-      }
-
-      if (deleted.isNotEmpty) {
-        for (final locale in _config.locales) {
-          final arb = arbService.readArb(locale);
-          arb.removeWhere(
-            (k, _) =>
-                deleted.contains(k) ||
-                deleted.contains(k.replaceFirst('@', '')),
-          );
-          arbService.writeRawArb(arb, locale);
-        }
-        print('Removed ${deleted.length} deleted keys.');
-      }
+    // Reconcile every locale with the template so keys removed from
+    // strings.yaml (now or in earlier commits) never survive in the ARBs.
+    var pruned = 0;
+    for (final locale in _config.locales) {
+      pruned += arbService.pruneStaleKeys(locale, engArb, onlyPrefix: only);
     }
-
-    final enKeys = <String, String>{};
-    for (final entry in allKeys.entries) {
-      enKeys[YamlStringsParser.dotToCamel(entry.key)] = entry.value.text;
+    if (pruned > 0) {
+      print('Pruned $pruned stale key(s).');
     }
-    final newEnArb = <String, dynamic>{'@@locale': 'en', ...enKeys};
-    for (final entry in allKeys.entries) {
-      final arbKey = YamlStringsParser.dotToCamel(entry.key);
-      final meta = arbService.genArbMeta(entry.key, entry.value.paramTypes);
-      if (meta != null) {
-        newEnArb['@$arbKey'] = meta;
-      }
-    }
-    arbService.writeRawArb(newEnArb, 'en');
 
     FlutterL10nRunner.run(_config.configDir);
 
